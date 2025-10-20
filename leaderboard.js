@@ -1,9 +1,8 @@
 const room = new WebsimSocket();
+const COLLECTION_NAME = 'leaderboard_scores_v3';
 
 export async function submitScore(lastGameData, onSuccess, onError) {
     try {
-        const currentUser = await window.websim.getCurrentUser();
-        
         let gameDataForDb = { ...lastGameData };
         if (gameDataForDb.replayData) {
             try {
@@ -21,32 +20,16 @@ export async function submitScore(lastGameData, onSuccess, onError) {
                 return; // Stop submission if upload fails
             }
         }
+
+        const scoreRecord = {
+            score: gameDataForDb.score,
+            level: gameDataForDb.level,
+            difficulty: gameDataForDb.difficulty,
+            replayDataUrl: gameDataForDb.replayDataUrl,
+            timestamp: gameDataForDb.timestamp,
+        };
         
-        const userRecords = await new Promise(resolve => {
-            const collection = room.collection('leaderboard_scores_v2').filter({ username: currentUser.username });
-            let unsubscribe;
-
-            const timeout = setTimeout(() => {
-                if (unsubscribe) unsubscribe();
-                resolve(collection.getList());
-            }, 2000);
-
-            unsubscribe = collection.subscribe(records => {
-                clearTimeout(timeout);
-                if (unsubscribe) unsubscribe();
-                resolve(records);
-            });
-        });
-
-        if (userRecords && userRecords.length > 0) {
-            const userRecord = userRecords[0];
-            const updatedScores = [...(userRecord.scores || []), gameDataForDb];
-            await room.collection('leaderboard_scores_v2').update(userRecord.id, { scores: updatedScores });
-        } else {
-            await room.collection('leaderboard_scores_v2').create({
-                scores: [gameDataForDb]
-            });
-        }
+        await room.collection(COLLECTION_NAME).create(scoreRecord);
         
         if (onSuccess) onSuccess();
     } catch (error) {
@@ -56,8 +39,8 @@ export async function submitScore(lastGameData, onSuccess, onError) {
 }
 
 export async function fetchLeaderboard() {
-    const allRecords = await new Promise(resolve => {
-        const collection = room.collection('leaderboard_scores_v2');
+    const allScores = await new Promise(resolve => {
+        const collection = room.collection(COLLECTION_NAME);
         let unsubscribe;
         
         const timeout = setTimeout(() => {
@@ -72,23 +55,33 @@ export async function fetchLeaderboard() {
         });
     });
 
-    if (!allRecords || allRecords.length === 0) {
+    if (!allScores || allScores.length === 0) {
         return [];
     }
 
-    const rankedPlayers = allRecords.map(record => {
-        if (!record.scores || record.scores.length === 0) return null;
+    const players = {}; // Group scores by username
+    allScores.forEach(scoreRecord => {
+        const username = scoreRecord.username;
+        if (!players[username]) {
+            players[username] = {
+                username: username,
+                allScores: []
+            };
+        }
+        players[username].allScores.push(scoreRecord);
+    });
 
-        const bestGame = record.scores.reduce((best, current) => {
+    const rankedPlayers = Object.values(players).map(playerData => {
+        const bestGame = playerData.allScores.reduce((best, current) => {
             return (!best || current.score > best.score) ? current : best;
         }, null);
         
         return {
-            username: record.username,
+            username: playerData.username,
             highestScore: bestGame ? bestGame.score : 0,
-            gamesPlayed: record.scores.length,
+            gamesPlayed: playerData.allScores.length,
             bestGameData: bestGame,
-            allScores: record.scores.sort((a,b) => b.score - a.score),
+            allScores: playerData.allScores.sort((a,b) => b.score - a.score),
         };
     }).filter(p => p && p.bestGameData)
       .sort((a, b) => b.highestScore - a.highestScore);
